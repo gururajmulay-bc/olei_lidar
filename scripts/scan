@@ -1,0 +1,256 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+import socket
+import struct
+import threading
+
+try:
+    from Queue import Queue
+except ImportError:
+    from queue import Queue
+
+import numpy as np
+import rospy
+from sensor_msgs.msg import LaserScan
+
+RANGE_MIN = 0.1  # m
+RANGE_MAX = 30  # m
+
+
+class DataCollector(threading.Thread):
+    def __init__(self, ip, port, freq=10, dist=0, merge=False):
+        self.queue = Queue(300)
+        self.freq = freq
+        self.dist = dist
+        self.merge = merge
+
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        rospy.loginfo("collector bind (%s, %s)", ip, port)
+        self.sock.bind((ip, port))
+        # self.sock.setblocking(0)
+        self.sock.settimeout(1.0 / self.freq)
+
+        self._running = False
+        self._lock = threading.Lock()
+
+        super(DataCollector, self).__init__()
+        self.setDaemon(True)
+
+        rospy.loginfo("data collector started")
+
+    def _loop(self):
+        hfmt = "<4s2ss3s12s2s2s2sL8s"
+        pfmt = "<HHbHb"
+        size = struct.calcsize(pfmt)
+
+        current_frame = None
+        self._running = True
+
+        while self._running:
+            try:
+                data, addr = self.sock.recvfrom(1240)
+            except socket.timeout:
+                continue
+            except socket.error as e:
+                rospy.logerr('socket error %s', e)
+                continue
+
+            head = data[:40]
+            magic, ver, sc, oem, model, code, hw, sw, tm, state = struct.unpack(hfmt, head)
+            scale = ord(sc) * 0.001  # mm -> m
+
+            th0 = th1 = 0
+            payload = data[40:]
+            dist_list = []
+            intense_list = []
+            offset = 0
+            for n in range(150):
+                d = payload[offset:offset + size]
+                offset += size
+                theta, near_dist, near_ref, far_dist, far_ref = struct.unpack(pfmt, d)
+                if theta < 0xff00:
+                    th1 = theta
+                    if n == 0:
+                        th0 = theta
+                    if self.dist == 0:
+                        if near_dist < 65280:
+                            dist_list.append(near_dist * scale)
+                        else:
+                            dist_list.append(np.inf)
+                        intense_list.append(near_ref)
+                    else:
+                        if far_dist < 65280:
+                            dist_list.append(far_dist * scale)
+                        else:
+                            dist_list.append(np.inf)
+                        intense_list.append(far_ref)
+
+            if dist_list:
+                if self.merge:
+                    # merge 360 mode
+                    if th0 == 0:
+                        # start of a new circle, push current merged frame
+                        if current_frame:
+                            self.put_data(current_frame)
+
+                        # new frame for new circle
+                        current_frame = {
+                            "angle_min": np.deg2rad(th0 / 100.0),
+                            "angle_max": np.deg2rad(th1 / 100.0),
+                            "timestamp": rospy.Time.now(),
+                            "ranges": dist_list,
+                            "intensities": intense_list,
+                        }
+                    elif current_frame:
+                        # append data
+                        current_frame['angle_max'] = np.deg2rad(th1 / 100.0)
+                        current_frame['ranges'] += dist_list
+                        current_frame['intensities'] += intense_list
+                else:
+                    # instant packet mode
+                    frame = {
+                        "angle_min": np.deg2rad(th0 / 100.0),
+                        "angle_max": np.deg2rad(th1 / 100.0),
+                        "timestamp": rospy.Time.now(),
+                        "ranges": dist_list,
+                        "intensities": intense_list,
+                    }
+                    self.put_data(frame)
+
+    def run(self):
+        try:
+            self._loop()
+        except Exception as e:
+            rospy.logerr("collector error %s", e)
+
+    def put_data(self, d):
+        with self._lock:
+            if self.queue.full():
+                rospy.loginfo("*** discard queue bottom")
+                self.queue.get()
+            self.queue.put(d)
+
+    def get_data(self):
+        with self._lock:
+            if not self.queue.empty():
+                d = self.queue.get()
+                return d
+
+    def stop(self):
+        self._running = False
+
+
+class OleLidarNode(object):
+
+    def __init__(self):
+        # Initialize params
+        self.ip = rospy.get_param('~ip', "192.168.1.10")
+        self.port = rospy.get_param('~port', 2368)
+        self.freq = rospy.get_param('~freq', 10)
+        self.dist = rospy.get_param('~distance', 0)
+        self.frame_id = rospy.get_param('~frame_id', "ole_lidar")
+        self.merge = rospy.get_param('~merge', True)
+
+        self.seq = 0
+
+        # publish
+        self.pub_scan = rospy.Publisher('ole_lidar/scan', LaserScan, queue_size=10)
+        # self.pub_cloud = rospy.Publisher('ole_lidar/cloud', PointCloud, queue_size=10)
+
+        # data thread
+        try:
+            self._collector = DataCollector(
+                self.ip, self.port, freq=self.freq, dist=self.dist, merge=self.merge
+            )
+            self._collector.start()
+        except socket.error as e:
+            self._collector = None
+            rospy.logerr("can't start data collector, socket error: %s", e)
+        except Exception as e:
+            self._collector = None
+            rospy.logerr("error: %s", e)
+
+        self._tmr = rospy.Timer(rospy.Duration(self.interval / 2), self.timer_cb)
+
+    @property
+    def interval(self):
+        # in (s)
+        if self.freq <= 10:
+            return 1.0 / self.freq / 6400 * 150
+        elif self.freq <= 20:
+            return 1.0 / self.freq / 3200 * 150
+        elif self.freq <= 30:
+            return 1.0 / self.freq / 2400 * 150
+
+    @property
+    def scan_time(self):
+        return 1.0 / self.freq
+
+    def timer_cb(self, _event):
+        if self._collector:
+            data = self._collector.get_data()
+            if data:
+                # publish scan
+                msg = LaserScan()
+                msg.header.seq = self.seq
+                msg.header.stamp = data['timestamp']
+                msg.header.frame_id = self.frame_id
+                msg.angle_min = data['angle_min']
+                msg.angle_max = data['angle_max']
+                msg.angle_increment = (msg.angle_max - msg.angle_min) / (len(data['ranges']) - 1)
+                msg.scan_time = self.scan_time
+                # msg.time_increment = msg.scan_time / len(data['ranges'])
+                msg.time_increment = msg.scan_time / (2 * np.pi) * msg.angle_increment
+                msg.range_min = RANGE_MIN
+                msg.range_max = RANGE_MAX
+
+                # NOTE: ole-lidar rotate clock-wise, it's inverse to ros angle
+                # we reverse data seq to solve this.
+                msg.ranges = [x for x in reversed(data['ranges'])]
+                msg.intensities = [x for x in reversed(data['intensities'])]
+                self.pub_scan.publish(msg)
+
+                '''
+                # publish cloud
+                pcloud = PointCloud()
+                pcloud.header.seq = self.seq
+                pcloud.header.stamp = data['timestamp']
+                pcloud.header.frame_id = "ole_lidar_cloud"
+
+                theta = np.deg2rad(data['angle_min'] / 100.0)
+                delta = (msg.angle_max - msg.angle_min) / len(data['ranges'])
+                for i, v in enumerate(data['ranges']):
+                    xarr = data['ranges'] * np.cos(theta + delta * i)
+                    yarr = data['ranges'] * np.sin(theta + delta * i)
+                    for x, y in zip(xarr, yarr):
+                        pcloud.points.append(Point32(x=x, y=y, z=0))
+
+                self.pub_cloud.publish(pcloud)
+                '''
+
+                self.seq += 1
+
+    def shutdown(self):
+        rospy.loginfo("node shutdown")
+        if self._collector:
+            self._collector.stop()
+            self._collector = None
+
+        if self._tmr:
+            self._tmr.shutdown()
+            self._tmr = None
+
+        self.pub_scan.unregister()
+        # self.pub_cloud.unregister()
+
+
+if __name__ == '__main__':
+    rospy.init_node('ole_lidar', log_level=rospy.DEBUG)
+
+    try:
+        node = OleLidarNode()
+        rospy.on_shutdown(node.shutdown)
+    except rospy.ROSInterruptException:
+        pass
+
+    rospy.spin()

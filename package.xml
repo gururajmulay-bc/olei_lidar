@@ -1,0 +1,23 @@
+<package format="2">
+    <name>ole_lidar</name>
+    <version>0.0.1</version>
+    <description>
+        OLE Lidar node
+    </description>
+    <author>John Ray</author>
+    <maintainer email="996351336@qq.com">John Ray</maintainer>
+    <license>BSD</license>
+    <url></url>
+
+    <buildtool_depend>catkin</buildtool_depend>
+    <build_depend>message_generation</build_depend>
+    <exec_depend>message_runtime</exec_depend>
+
+    <depend>rosgraph_msgs</depend>
+    <depend>dynamic_reconfigure</depend>
+    <depend>roscpp</depend>
+    <depend>rospy</depend>
+    <depend>sensor_msgs</depend>
+
+    <test_depend>rostest</test_depend>
+</package>

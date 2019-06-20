@@ -1,0 +1,10 @@
+<launch>
+  <node pkg="ole_lidar" type="scan" name="ole_lidar">
+    <param name="ip" value="192.168.3.2"/>
+    <param name="port" value="2368"/>
+    <param name="freq" value="10"/>
+    <param name="distance" value="0"/>
+    <param name="frame_id" value="ole_lidar"/>
+    <param name="merge" value="true"/>
+  </node>
+</launch>
