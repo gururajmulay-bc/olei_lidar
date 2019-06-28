@@ -1,6 +1,6 @@
 <launch>
   <node pkg="ole_lidar" type="scan" name="ole_lidar">
-    <param name="ip" value="192.168.1.10"/>
+    <param name="ip" value="192.168.3.2"/>
     <param name="port" value="2112"/>
     <param name="freq" value="10"/>
     <param name="distance" value="0"/>
