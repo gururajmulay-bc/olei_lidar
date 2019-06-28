@@ -145,7 +145,7 @@ class OleLidarNode(object):
     def __init__(self):
         # Initialize params
         self.ip = rospy.get_param('~ip', "192.168.3.7")
-        self.port = rospy.get_param('~port', 2368)
+        self.port = rospy.get_param('~port', 2300)
         self.freq = rospy.get_param('~freq', 10)
         self.dist = rospy.get_param('~distance', 0)
         self.frame_id = rospy.get_param('~frame_id', "ole_lidar")
