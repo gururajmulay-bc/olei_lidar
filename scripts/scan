@@ -25,7 +25,7 @@ class DataCollector(threading.Thread):
         self.merge = merge
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        rospy.loginfo("collector bind (%s, %s)", ip, port)
+        rospy.logfatal("collector bind (%s, %s)", ip, port) 
         self.sock.bind((ip, port))
         # self.sock.setblocking(0)
         self.sock.settimeout(1.0 / self.freq)
@@ -36,7 +36,7 @@ class DataCollector(threading.Thread):
         super(DataCollector, self).__init__()
         self.setDaemon(True)
 
-        rospy.loginfo("data collector started")
+        rospy.logfatal("data collector started")
 
     def _loop(self):
         hfmt = "<4s2ss3s12s2s2s2sL8s"
@@ -49,6 +49,7 @@ class DataCollector(threading.Thread):
         while self._running:
             try:
                 data, addr = self.sock.recvfrom(1240)
+                rospy.logfatal("received data")
             except socket.timeout:
                 continue
             except socket.error as e:
@@ -144,8 +145,8 @@ class OleLidarNode(object):
 
     def __init__(self):
         # Initialize params
-        self.ip = rospy.get_param('~ip', "192.168.3.7")
-        self.port = rospy.get_param('~port', 2300)
+        self.ip = rospy.get_param('~ip', "192.168.3.1")
+        self.port = rospy.get_param('~port', 2368)
         self.freq = rospy.get_param('~freq', 10)
         self.dist = rospy.get_param('~distance', 0)
         self.frame_id = rospy.get_param('~frame_id', "ole_lidar")
@@ -155,6 +156,7 @@ class OleLidarNode(object):
 
         # publish
         self.pub_scan = rospy.Publisher('ole_lidar/scan', LaserScan, queue_size=10)
+        # self.pub_scan = rospy.Publisher('/scan', LaserScan, queue_size=10)
         # self.pub_cloud = rospy.Publisher('ole_lidar/cloud', PointCloud, queue_size=10)
 
         # data thread
